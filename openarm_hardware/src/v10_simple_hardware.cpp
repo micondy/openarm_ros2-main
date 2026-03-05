@@ -14,6 +14,8 @@
 
 #include "openarm_hardware/v10_simple_hardware.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -51,6 +53,25 @@ namespace openarm_hardware {
 OpenArm_v10HW::OpenArm_v10HW() = default;
 
 bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
+  auto parse_bool = [](const std::string& value, bool default_value) {
+    std::string normalized = value;
+    normalized.erase(std::remove_if(normalized.begin(), normalized.end(),
+                                    [](unsigned char ch) { return std::isspace(ch) != 0; }),
+                     normalized.end());
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (normalized == "true" || normalized == "1" || normalized == "yes" ||
+        normalized == "on") {
+      return true;
+    }
+    if (normalized == "false" || normalized == "0" || normalized == "no" ||
+        normalized == "off") {
+      return false;
+    }
+    return default_value;
+  };
+
   // ===========================================================================
   // 配置解析说明
   // - 所有参数都来自 <ros2_control><hardware><param .../></hardware></ros2_control>
@@ -65,24 +86,24 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   arm_prefix_ = (it != info.hardware_parameters.end()) ? it->second : "";
 
   it = info.hardware_parameters.find("hand");
-  hand_ = (it == info.hardware_parameters.end()) ? true : (it->second == "true");
+  hand_ = (it == info.hardware_parameters.end()) ? true : parse_bool(it->second, true);
 
   it = info.hardware_parameters.find("can_fd");
-  can_fd_ = (it == info.hardware_parameters.end()) ? true : (it->second == "true");
+  can_fd_ = (it == info.hardware_parameters.end()) ? true : parse_bool(it->second, true);
 
   // 2) 补偿功能开关（默认关闭，按需开启）
   it = info.hardware_parameters.find("enable_gravity_comp");
     enable_gravity_comp_ =
-      (it != info.hardware_parameters.end()) && (it->second == "true");
+      (it != info.hardware_parameters.end()) && parse_bool(it->second, false);
 
   it = info.hardware_parameters.find("enable_coriolis_comp");
     enable_coriolis_comp_ =
-      (it != info.hardware_parameters.end()) && (it->second == "true");
+      (it != info.hardware_parameters.end()) && parse_bool(it->second, false);
 
   // 3) 动力学链路端点：如果未配置 tip_link，则按 arm_prefix 自动推断。
   it = info.hardware_parameters.find("root_link");
   root_link_ = (it != info.hardware_parameters.end()) ? it->second : "openarm_body_link0";
-
+  
   it = info.hardware_parameters.find("tip_link");
   if (it != info.hardware_parameters.end()) {
     tip_link_ = it->second;
@@ -106,6 +127,10 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
       kd_[i - 1] = std::stod(it->second);
     }
   }
+
+  //强制开启补偿
+  enable_gravity_comp_=true;
+  enable_coriolis_comp_=true;
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "【配置总览】CAN=%s | arm_prefix=%s | 手部=%s | CAN-FD=%s | 重力补偿=%s | 科里奥利补偿=%s",
@@ -340,6 +365,7 @@ hardware_interface::return_type OpenArm_v10HW::write(
                              coriolis_torque.data());
     }
   }
+  
   // 构建MIT控制指令：前馈力矩 = 用户命令 + 补偿
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   arm_params.reserve(ARM_DOF);
@@ -349,11 +375,23 @@ hardware_interface::return_type OpenArm_v10HW::write(
     // 若你以后加摩擦补偿，可扩展为：
     // τ_ff = τ_user + τ_g + τ_c + τ_friction
     const double tau_ff =
-        tau_commands_[i] + gravity_torque[i] + coriolis_torque[i];
+      tau_commands_[i] + gravity_torque[i] + coriolis_torque[i];
     arm_params.push_back(
         {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_ff});
   }
 
+  static size_t print_counter = 0;
+  ++print_counter;
+  if (print_counter % 101 == 0) {
+    std::ostringstream oss;
+    oss << arm_prefix_ << " gravity_compensation: [";
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      oss << gravity_torque[i];
+      if (i + 1 < ARM_DOF) oss << ", ";
+    }
+    oss << "]";
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "%s", oss.str().c_str());
+  }
   openarm_->get_arm().mit_control_all(arm_params);
   // 夹爪控制（如果启用） 
   if (hand_ && joint_names_.size() > ARM_DOF) {

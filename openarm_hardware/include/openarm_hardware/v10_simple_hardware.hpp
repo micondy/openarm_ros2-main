@@ -108,8 +108,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::string arm_prefix_;
   bool hand_;
   bool can_fd_;
-  bool enable_gravity_comp_ = true;
-  bool enable_coriolis_comp_ = true;
+    bool enable_gravity_comp_ = false;
+    bool enable_coriolis_comp_ = false;
   std::string root_link_ = "openarm_body_link0";
   std::string tip_link_ = "openarm_hand";
 

@@ -50,10 +50,10 @@ bool Dynamics::Init() {
   }
 
   // ===========================================================================
-  // Step 2) 解析 URDF -> urdf::ModelInterface
+  // Step 2) 解析 URDF -> urdf::Model
   // ===========================================================================
-  auto urdf_model = urdf::parseURDF(urdf_content);
-  if (!urdf_model) {
+  urdf::Model urdf_model;
+  if (!urdf_model.initString(urdf_content)) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"), "Failed to parse URDF");
     return false;
   }
@@ -62,7 +62,7 @@ bool Dynamics::Init() {
   // Step 3) urdf model -> KDL Tree（完整机器人）
   // ===========================================================================
   KDL::Tree kdl_tree;
-  if (!kdl_parser::treeFromUrdfModel(*urdf_model, kdl_tree)) {
+  if (!kdl_parser::treeFromUrdfModel(urdf_model, kdl_tree)) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                  "Failed to extract KDL tree from URDF");
     return false;
