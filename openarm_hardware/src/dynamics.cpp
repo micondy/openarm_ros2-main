@@ -21,6 +21,35 @@
 
 namespace openarm_hardware {
 
+namespace {
+
+const char* joint_type_to_string(KDL::Joint::JointType type) {
+  switch (type) {
+    case KDL::Joint::None:
+      return "None";
+    case KDL::Joint::RotAxis:
+      return "RotAxis";
+    case KDL::Joint::RotX:
+      return "RotX";
+    case KDL::Joint::RotY:
+      return "RotY";
+    case KDL::Joint::RotZ:
+      return "RotZ";
+    case KDL::Joint::TransAxis:
+      return "TransAxis";
+    case KDL::Joint::TransX:
+      return "TransX";
+    case KDL::Joint::TransY:
+      return "TransY";
+    case KDL::Joint::TransZ:
+      return "TransZ";
+    default:
+      return "Unknown";
+  }
+}
+
+}  // namespace
+
 Dynamics::Dynamics(const std::string& urdf_or_xml, const std::string& root_link,
                    const std::string& tip_link, bool is_urdf_xml)
     : urdf_or_xml_(urdf_or_xml),
@@ -77,6 +106,23 @@ bool Dynamics::Init() {
                  "Failed to get KDL chain from '%s' to '%s'", root_link_.c_str(),
                  tip_link_.c_str());
     return false;
+  }
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "KDL chain built: root=%s tip=%s segments=%u joints=%u",
+              root_link_.c_str(), tip_link_.c_str(),
+              kdl_chain_.getNrOfSegments(), kdl_chain_.getNrOfJoints());
+
+  const auto& segments = kdl_chain_.segments;
+  for (size_t i = 0; i < segments.size(); ++i) {
+    const auto& segment = segments[i];
+    const auto& joint = segment.getJoint();
+    const auto axis = joint.JointAxis();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "KDL seg[%zu]: seg=%s joint=%s type=%s axis=(%.6f, %.6f, %.6f)",
+                i, segment.getName().c_str(), joint.getName().c_str(),
+                joint_type_to_string(joint.getType()),
+                axis.x(), axis.y(), axis.z());
   }
 
   // ===========================================================================
