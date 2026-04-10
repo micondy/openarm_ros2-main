@@ -14,8 +14,8 @@
 
 moveit_setup_assistant_config:
   urdf:
-    package: openarm_description
-    relative_path: urdf/robot/v10.urdf.xacro
+    package: openarm_bimanual_moveit_config
+    relative_path: config/openarm_bimanual.urdf.xacro
     xacro_args: bimanual:=true
   srdf:
     relative_path: config/openarm_bimanual.srdf

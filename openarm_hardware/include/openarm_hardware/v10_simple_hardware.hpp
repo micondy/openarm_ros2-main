@@ -134,22 +134,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool parse_config(const hardware_interface::HardwareInfo& info);
   void generate_joint_names();
   
-    // Teach 模式接口
-    void enable_teach_mode(bool enable);
-    void export_teach_trajectory(const std::string& filename);
 
-    // Teach 模式成员
-    bool teach_mode_ = false;
-    double teach_kp_ = 5.0;
-    double teach_kd_ = 0.3;
-    bool record_trajectory_ = false;
-    double max_teach_velocity_ = 1.5;  // rad/s
-    double max_teach_tau_ = 20.0;
-    double max_tau_ = 20.0;
-    
-    rclcpp::Time teach_start_time_;
-    std::vector<std::vector<double>> recorded_positions_;
-    std::vector<double> recorded_time_;
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);

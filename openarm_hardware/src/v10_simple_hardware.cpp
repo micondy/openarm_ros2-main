@@ -17,31 +17,17 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <cmath>
-#include <fstream>
-#include <sstream>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <iomanip>
+#include <ctime>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/rclcpp.hpp"
 
 namespace openarm_hardware {
-
-namespace {
-
-const char* arm_side_from_prefix(const std::string& arm_prefix) {
-  if (arm_prefix == "left_") {
-    return "left";
-  }
-  if (arm_prefix == "right_") {
-    return "right";
-  }
-  return "default";
-}
-
-}  // namespace
 
 /**
  * =============================================================================
@@ -68,43 +54,6 @@ const char* arm_side_from_prefix(const std::string& arm_prefix) {
  */
 
 OpenArm_v10HW::OpenArm_v10HW() = default;
-
-void OpenArm_v10HW::enable_teach_mode(bool enable) {
-  teach_mode_ = enable;
-
-  if (enable) {
-    teach_start_time_ = rclcpp::Clock().now();
-    recorded_positions_.clear();
-    recorded_time_.clear();
-  }
-
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Teach mode %s (arm=%s)",
-              teach_mode_ ? "enabled" : "disabled",
-              arm_side_from_prefix(arm_prefix_));
-}
-
-void OpenArm_v10HW::export_teach_trajectory(const std::string& filename) {
-  if (recorded_positions_.empty() || recorded_time_.empty()) {
-    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"), "No teach trajectory to export.");
-    return;
-  }
-  std::ofstream ofs(filename);
-  if (!ofs.is_open()) {
-    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"), "Failed to open file: %s", filename.c_str());
-    return;
-  }
-  ofs << "# time(s), joint1, joint2, joint3, joint4, joint5, joint6, joint7\n";
-  for (size_t i = 0; i < recorded_positions_.size(); ++i) {
-    ofs << recorded_time_[i];
-    for (size_t j = 0; j < ARM_DOF; ++j) {
-      ofs << ", " << recorded_positions_[i][j];
-    }
-    ofs << "\n";
-  }
-  ofs.close();
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Teach trajectory exported to %s", filename.c_str());
-}
 
 bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   auto parse_bool = [](const std::string& value, bool default_value) {
@@ -154,38 +103,6 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     enable_coriolis_comp_ =
       (it != info.hardware_parameters.end()) && parse_bool(it->second, false);
 
-  // teach 模式相关配置
-  it = info.hardware_parameters.find("teach_mode");
-  teach_mode_ = (it != info.hardware_parameters.end()) && parse_bool(it->second, false);
-
-  it = info.hardware_parameters.find("teach_kp");
-  if (it != info.hardware_parameters.end()) {
-    try { teach_kp_ = std::stod(it->second); } catch (...) {}
-  }
-
-  it = info.hardware_parameters.find("teach_kd");
-  if (it != info.hardware_parameters.end()) {
-    try { teach_kd_ = std::stod(it->second); } catch (...) {}
-  }
-
-  it = info.hardware_parameters.find("record_trajectory");
-  record_trajectory_ = (it != info.hardware_parameters.end()) && parse_bool(it->second, false);
-
-  it = info.hardware_parameters.find("max_teach_velocity");
-  if (it != info.hardware_parameters.end()) {
-    try { max_teach_velocity_ = std::stod(it->second); } catch (...) {}
-  }
-
-  it = info.hardware_parameters.find("max_tau");
-  if (it != info.hardware_parameters.end()) {
-    try { max_tau_ = std::stod(it->second); } catch (...) {}
-  }
-
-  it = info.hardware_parameters.find("max_teach_tau");
-  if (it != info.hardware_parameters.end()) {
-    try { max_teach_tau_ = std::stod(it->second); } catch (...) {}
-  }
-
   // 3) 动力学链路端点：如果未配置 tip_link，则按 arm_prefix 自动推断。
   it = info.hardware_parameters.find("root_link");
   root_link_ = (it != info.hardware_parameters.end()) ? it->second : "openarm_body_link0";
@@ -215,15 +132,15 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
 
   //强制开启补偿
-  // enable_gravity_comp_=true;
-  // enable_coriolis_comp_=true;
+  enable_gravity_comp_=true;
+  //enable_coriolis_comp_=true;
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "【配置总览】CAN=%s | arm_prefix=%s | 手部=%s | CAN-FD=%s | 重力补偿=%s | 科里奥利补偿=%s | 拖拽模式=%s",
+              "【配置总览】CAN=%s | arm_prefix=%s | 手部=%s | CAN-FD=%s | 重力补偿=%s | 科里奥利补偿=%s",
               can_interface_.c_str(), arm_prefix_.c_str(),
               hand_ ? "开启" : "关闭", can_fd_ ? "开启" : "关闭",
               enable_gravity_comp_ ? "开启" : "关闭",
-              enable_coriolis_comp_ ? "开启" : "关闭",  
-              teach_mode_ ? "开启" : "关闭");
+              enable_coriolis_comp_ ? "开启" : "关闭");
 
   if (enable_gravity_comp_ || enable_coriolis_comp_) {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -311,7 +228,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
 
   // 动力学模型使用 URDF 原始 XML，避免依赖额外文件路径。
   // 这样在 launch/仿真/真机环境中都更稳定，不依赖绝对路径。
-  if (enable_gravity_comp_ || enable_coriolis_comp_ || teach_mode_) {
+  if (enable_gravity_comp_ || enable_coriolis_comp_) {
     dynamics_ = std::make_unique<Dynamics>(info.original_xml, root_link_, tip_link_, true);
     if (!dynamics_->Init()) {
       RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
@@ -381,7 +298,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
 
-  return_to_zero();
+  //return_to_zero();
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
   return CallbackReturn::SUCCESS;
@@ -407,7 +324,7 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // 这一步通常由 controller_manager 以固定频率调用。
   openarm_->refresh_all();
   openarm_->recv_all();
-
+  
   // 读取臂关节状态
   const auto& arm_motors = openarm_->get_arm().get_motors();
   for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
@@ -415,7 +332,27 @@ hardware_interface::return_type OpenArm_v10HW::read(
     vel_states_[i] = arm_motors[i].get_velocity();
     tau_states_[i] = arm_motors[i].get_torque();
   }
-
+  
+  // // [DEBUG] 保存所有关节状态到 CSV
+  // auto now = std::chrono::system_clock::now();
+  // auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  // auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+  
+  // std::string arm_name = arm_prefix_.empty() ? "center" : (arm_prefix_ == "left_" ? "left" : "right");
+  // std::ofstream outfile("/home/scc/joint_states_all.csv", std::ios::app);
+  // if (outfile.is_open()) {
+  //   char time_buf[100];
+  //   std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t_now));
+    
+  //   for (size_t i = 0; i < ARM_DOF; ++i) {
+  //     outfile << time_buf << "." << std::setfill('0') << std::setw(3) << ms.count() 
+  //             << "," << arm_name << ",joint" << (i + 1) 
+  //             << "," << std::fixed << std::setprecision(6) 
+  //             << pos_states_[i] << "\n";
+  //   }
+  //   outfile.close();
+  // }
+  
   // 读取夹爪状态（如果启用）
   if (hand_ && joint_names_.size() > ARM_DOF) {
     const auto& gripper_motors = openarm_->get_gripper().get_motors();
@@ -429,45 +366,7 @@ hardware_interface::return_type OpenArm_v10HW::read(
       tau_states_[ARM_DOF] = 0;  // gripper_motors[0].get_torque();
     }
   }
-
-  {
-    std::ostringstream pos_stream;
-    std::ostringstream vel_stream;
-    std::ostringstream eff_stream;
-
-    pos_stream << "pos=[";
-    vel_stream << "vel=[";
-    eff_stream << "eff=[";
-
-    for (size_t i = 0; i < ARM_DOF; ++i) {
-      pos_stream << pos_states_[i];
-      vel_stream << vel_states_[i];
-      eff_stream << tau_states_[i];
-      if (i + 1 < ARM_DOF) {
-        pos_stream << ", ";
-        vel_stream << ", ";
-        eff_stream << ", ";
-      }
-    }
-
-    pos_stream << "]";
-    vel_stream << "]";
-    eff_stream << "]";
-
-    static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-    RCLCPP_INFO_THROTTLE(
-        rclcpp::get_logger("OpenArm_v10HW"), steady_clock, 500,
-        "Read state (arm=%s) %s %s %s",
-        arm_side_from_prefix(arm_prefix_), pos_stream.str().c_str(),
-        vel_stream.str().c_str(), eff_stream.str().c_str());
-  }
-
-  if (teach_mode_ && record_trajectory_) {
-    const rclcpp::Time now = rclcpp::Clock().now();
-    const double t = (now - teach_start_time_).seconds();
-    recorded_positions_.push_back(pos_states_);
-    recorded_time_.push_back(t);
-  }
+  
 
   return hardware_interface::return_type::OK;
 }
@@ -478,110 +377,48 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // 这里是你后续继续扩展“控制策略/补偿策略”的主入口。
   std::vector<double> gravity_torque(ARM_DOF, 0.0);
   std::vector<double> coriolis_torque(ARM_DOF, 0.0);
-  std::vector<double> dynamics_q(ARM_DOF, 0.0);
-  std::vector<double> dynamics_qdot(ARM_DOF, 0.0);
-
-  for (size_t i = 0; i < ARM_DOF; ++i) {
-    dynamics_q[i] = pos_states_[i];
-    dynamics_qdot[i] = vel_states_[i];
-  }
 
   if (dynamics_) {
-    if (enable_gravity_comp_ || teach_mode_) {
+    if (enable_gravity_comp_) {
       // τ_g = G(q)
-      dynamics_->GetGravity(dynamics_q.data(), gravity_torque.data());
+      dynamics_->GetGravity(pos_states_.data(), gravity_torque.data());
     }
 
     if (enable_coriolis_comp_) {
       // τ_c = C(q, qdot) * qdot
-      dynamics_->GetCoriolis(dynamics_q.data(), dynamics_qdot.data(),
+      dynamics_->GetCoriolis(pos_states_.data(), vel_states_.data(),
                              coriolis_torque.data());
     }
   }
-
-  // 构建MIT控制指令：根据模式分别组装参数
+  
+  // 构建MIT控制指令：前馈力矩 = 用户命令 + 补偿
   std::vector<openarm::damiao_motor::MITParam> arm_params;
-  std::vector<double> tau_ff_debug(ARM_DOF, 0.0);
   arm_params.reserve(ARM_DOF);
+  static double gravity_scale = 1.0;
+  for (size_t i = 0; i < ARM_DOF; ++i) {
 
-  if (teach_mode_) {
-    constexpr double teach_velocity_deadzone = 0.02;   // rad/s
-    constexpr double teach_viscous_damping = 0.8;      // Nm/(rad/s)
-    constexpr double teach_coulomb_friction = 0.05;    // Nm
-
-    for (size_t i = 0; i < ARM_DOF; ++i) {
-      const bool overspeed = std::abs(vel_states_[i]) > max_teach_velocity_;
-      const double teach_tau_limit = std::min(max_tau_, max_teach_tau_);
-      const double velocity = vel_states_[i];
-
-      double tau_ff = gravity_torque[i];
-      if (velocity > teach_velocity_deadzone) {
-        tau_ff -= teach_viscous_damping * velocity;
-        tau_ff -= teach_coulomb_friction;
-      } else if (velocity < -teach_velocity_deadzone) {
-        tau_ff -= teach_viscous_damping * velocity;
-        tau_ff += teach_coulomb_friction;
-      }
-
-      if (overspeed) {
-        tau_ff = 0.0;
-      }
-      tau_ff = std::clamp(tau_ff, -teach_tau_limit, teach_tau_limit);
-      tau_ff_debug[i] = tau_ff;
-   
-      const double kd_cmd = overspeed ? std::max(teach_kd_, 2.0) : teach_kd_;
-       arm_params.push_back(
-           {0.0, kd_cmd, 0.0, 0.0, tau_ff});
-
-      if (overspeed) {
-        static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-        RCLCPP_WARN_THROTTLE(
-            rclcpp::get_logger("OpenArm_v10HW"), steady_clock, 500,
-            "Teach safety active (arm=%s, joint=%zu): tau_ff forced to 0, kd=%.3f",
-            arm_side_from_prefix(arm_prefix_), i + 1, kd_cmd);
-      }
-    }
-  } else {
-    for (size_t i = 0; i < ARM_DOF; ++i) {
-      // 正常控制：用户命令 + 动力学补偿
-      double tau_ff = tau_commands_[i] + gravity_torque[i] + coriolis_torque[i];
-      tau_ff = std::clamp(tau_ff, -max_tau_, max_tau_);
-      tau_ff_debug[i] = tau_ff;
-      arm_params.push_back({kp_[i], kd_[i], pos_commands_[i],
-                            vel_commands_[i], tau_ff});
-    }
+    const double tau_ff = gravity_torque[i] * gravity_scale;
+    arm_params.push_back(
+        {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_ff});
+    
+    // // [DEBUG] 记录所有关节的补偿到文件
+    // auto now = std::chrono::system_clock::now();
+    // auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    // auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    
+    // std::string arm_name = arm_prefix_.empty() ? "center" : (arm_prefix_ == "left_" ? "left" : "right");
+    // std::ofstream outfile("/home/scc/gravity_compensation_all.csv", std::ios::app);
+    // if (outfile.is_open()) {
+    //   char time_buf[100];
+    //   std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t_now));
+    //   outfile << time_buf << "." << std::setfill('0') << std::setw(3) << ms.count() 
+    //           << "," << arm_name << ",joint" << (i + 1) << "," 
+    //           << std::fixed << std::setprecision(6) << tau_ff << "\n";
+    //   outfile.close();
+    // }
   }
-  // 每101次打印一次力矩来源关键量：q/q_des/vel/vel_des/kp/kd/gravity/tau + pos_err
-  // MIT: tau = kp*(q_des-q) + kd*(vel_des-vel) + tau_ff
-  // static size_t print_counter = 0;
-  // ++print_counter;
-  // if (print_counter % 101 == 0) {
-  //   for (size_t i = 0; i < ARM_DOF; ++i) {
-  //     const double kp_cmd = teach_mode_ ? 0.0 : kp_[i];
-  //     const double kd_cmd =
-  //         teach_mode_ ? ((std::abs(vel_states_[i]) > max_teach_velocity_)
-  //                            ? std::max(teach_kd_, 2.0)
-  //                            : teach_kd_)
-  //                     : kd_[i];
-  //     const double q_des = teach_mode_ ? 0.0 : pos_commands_[i];
-  //     const double vel_des = teach_mode_ ? 0.0 : vel_commands_[i];
-  //     const double pos_err = teach_mode_ ? 0.0 : (q_des - pos_states_[i]);
 
-  //     RCLCPP_INFO(
-  //         rclcpp::get_logger("OpenArm_v10HW"),
-  //         "%s can=%s j%zu | q=%.3f q_des=%.3f err=%.3f | v=%.3f v_des=%.3f | kp=%.2f kd=%.2f | grav=%.3f | tau=%.3f",
-  //         arm_side_from_prefix(arm_prefix_), can_interface_.c_str(), i + 1,
-  //         pos_states_[i], q_des, pos_err,
-  //         vel_states_[i], vel_des,
-  //         kp_cmd, kd_cmd,
-  //         gravity_torque[i], tau_ff_debug[i]);
-  //   }
-  // }
-
-  
   openarm_->get_arm().mit_control_all(arm_params);
-  
-  
   // 夹爪控制（如果启用） 
   if (hand_ && joint_names_.size() > ARM_DOF) {
     // gripper 仍按位置主导控制，保持与 MoveIt2 默认控制器兼容。
