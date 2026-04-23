@@ -109,8 +109,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::string arm_prefix_;
   bool hand_;
   bool can_fd_;
-    bool enable_gravity_comp_ = false;
-    bool enable_coriolis_comp_ = false;
+  bool enable_gravity_comp_ = false;
+  bool enable_coriolis_comp_ = false;
+ 
   std::string root_link_ = "openarm_body_link0";
   std::string tip_link_ = "openarm_hand";
 
@@ -133,8 +134,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void return_to_zero();
   bool parse_config(const hardware_interface::HardwareInfo& info);
   void generate_joint_names();
-  
-
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);

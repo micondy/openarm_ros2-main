@@ -29,6 +29,10 @@
 
 namespace openarm_hardware {
 
+namespace {
+bool enable_plan_10 = false;
+}  // namespace
+
 /**
  * =============================================================================
  * @file v10_simple_hardware.cpp
@@ -130,10 +134,17 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
       kd_[i - 1] = std::stod(it->second);
     }
   }
-
+  
+ 
   //强制开启补偿
-  enable_gravity_comp_=true;
+  //enable_gravity_comp_=true;
   //enable_coriolis_comp_=true;
+  enable_plan_10=true;
+
+   if (enable_plan_10) {
+    kp_ = {500.0, 400.0, 300.0, 300.0, 60.0, 60.0, 60.0, 20.0};
+    kd_ = {5.0, 5.0, 4.5, 4.5, 0.5, 0.5, 0.5, 0.25};
+  }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "【配置总览】CAN=%s | arm_prefix=%s | 手部=%s | CAN-FD=%s | 重力补偿=%s | 科里奥利补偿=%s",
@@ -373,33 +384,31 @@ hardware_interface::return_type OpenArm_v10HW::read(
 
 hardware_interface::return_type OpenArm_v10HW::write(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
-  // write() 数据流：controller命令 +（可选）补偿 -> MIT命令 -> CAN。
-  // 这里是你后续继续扩展“控制策略/补偿策略”的主入口。
+
   std::vector<double> gravity_torque(ARM_DOF, 0.0);
   std::vector<double> coriolis_torque(ARM_DOF, 0.0);
 
   if (dynamics_) {
     if (enable_gravity_comp_) {
-      // τ_g = G(q)
+
       dynamics_->GetGravity(pos_states_.data(), gravity_torque.data());
     }
 
     if (enable_coriolis_comp_) {
-      // τ_c = C(q, qdot) * qdot
       dynamics_->GetCoriolis(pos_states_.data(), vel_states_.data(),
                              coriolis_torque.data());
     }
   }
-  
-  // 构建MIT控制指令：前馈力矩 = 用户命令 + 补偿
+
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   arm_params.reserve(ARM_DOF);
   static double gravity_scale = 1.0;
   for (size_t i = 0; i < ARM_DOF; ++i) {
 
-    const double tau_ff = gravity_torque[i] * gravity_scale;
+    const double vel_cmd = enable_plan_10 ? 0.0 : vel_commands_[i];
+    const double tau_ff = enable_plan_10 ? 0.0 : gravity_torque[i] * gravity_scale;
     arm_params.push_back(
-        {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_ff});
+      {kp_[i], kd_[i], pos_commands_[i], vel_cmd, tau_ff});
     
     // // [DEBUG] 记录所有关节的补偿到文件
     // auto now = std::chrono::system_clock::now();
